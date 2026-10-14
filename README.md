@@ -1,5 +1,11 @@
 # dolt-mcp-vcs
 
+<!-- intent-select-partner:start -->
+<p><a href="https://intentsolutions.io/"><img src="https://raw.githubusercontent.com/intent-solutions-io/.github/b82af5d3e7951d85e39ea9e65cc24ee8278722a7/assets/brand/claude-select-partner.svg" alt="Intent Solutions: Claude Partner Network Select Services Partner" width="300" height="95" /></a></p>
+
+Intent Solutions is a Claude Partner Network Select Services Partner.
+<!-- intent-select-partner:end -->
+
 **One plugin for every make and model of Dolt.** Point it at any workspace and it answers the
 first question that matters — *what kind of Dolt database am I working with?* — then does the
 work: version-control verbs (branch / merge / diff / log / `AS OF` / data-PR awareness) over
