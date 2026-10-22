@@ -179,3 +179,25 @@ This plugin was run end-to-end through the [Intent Eval Platform](https://github
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE).
+
+## Idle reaper safety
+
+Version 0.2.1 checks user databases named `dolt` and refuses failed or malformed
+MCP responses. Encoded schema discovery prevents embedded newlines from hiding
+databases behind apparently clean rows. Positive bd ownership is required before
+queries; unrelated/Freshie processes remain untouched. The reaper verifies the candidate PID owns the loopback listener,
+queries `main` explicitly, and rechecks process identity and activity before
+SIGTERM. Deploy `scripts/reaper_endpoint.py` beside `scripts/dolt-idle-reaper.sh`;
+a missing helper keeps the server alive. The pinned MCP dependency is unchanged.
+
+Use automatic reaping only for bd-managed servers whose work lives on `main`,
+whose account sees all databases. Encoded identifiers outside the supported
+single-line ASCII set conservatively retain the server. Other branches, hidden
+databases, and a concurrent write after the final check are outside this
+observation protocol. This is not an atomic shutdown guarantee.
+
+The [complete safety contract and hermetic validation procedure](https://github.com/jeremylongshore/dolt-mcp-vcs-plugin/blob/main/000-docs/006-DR-STND-idle-reaper-safety.md)
+record the formatter provenance and refusal cases. Roll back by disabling the
+reaper schedule first, then restoring a reviewed prior revision; keep scheduling
+disabled while that revision contains the skip-`dolt` defect. No cron or live
+process is changed by installing this patch.
