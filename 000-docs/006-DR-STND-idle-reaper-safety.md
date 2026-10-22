@@ -22,13 +22,26 @@ tools. The MCP binary pin and checksum remain owned by
 
 ## Required observations
 
+- Ownership must positively identify a bd server: its existing cwd is
+  `.beads/dolt` or `.beads`, or its workspace-root cwd has a
+  `.beads/dolt-server.pid` marker matching that exact PID. Merely having a
+  `.beads` directory is insufficient. Unrelated/Freshie servers are retained
+  before any endpoint or MCP query.
 - The activity-file heuristic must indicate at least `IDLE_MIN` idle minutes.
 - The candidate must be a direct `dolt sql-server` process in the reaper's network
   namespace. Its file descriptors must own one unambiguous IPv4 listener reachable
   through `127.0.0.1`. Declared ports are not evidence of listener ownership.
 - Database discovery and every main-branch status query must succeed through that
-  local endpoint. Explicit host, flavor, database, branch, and port flags prevent
-  inherited connection defaults from redirecting the observation.
+  local endpoint. The text `list_databases` result is only a connection hint for
+  one ordinary user database; it never establishes inventory completeness.
+  The pinned query tool needs that user database for its `DOLT_CHECKOUT`.
+  `SELECT HEX(SCHEMA_NAME) AS database_hex FROM information_schema.SCHEMATA`
+  then supplies the authoritative visible inventory. Every row must be canonical
+  hex, decode to a supported identifier, and be unique before any count query.
+  An encoded newline cannot masquerade as two clean database rows. Missing
+  bootstrap candidates, failed discovery, and empty/malformed inventories refuse.
+  Explicit host, flavor, database, branch, and port flags prevent inherited
+  connection defaults from redirecting the observation.
 - Only `information_schema`, `mysql`, `performance_schema`, and `sys` are skipped.
   At least one user database must be checked. Unknown formatting or unsupported
   identifier characters keep the server alive.
@@ -43,9 +56,8 @@ arguments and invalid idle thresholds fail before process discovery.
 A writer can race the final observation and `SIGTERM`; timestamp granularity and
 unlogged queries also limit the activity heuristic. This patch does not lock out
 writers, enumerate other branches, or prove that the account can see hidden
-schemas. Database identifiers must use ordinary single-line ASCII names: the
-upstream Markdown formatter does not escape identifiers, so deliberately
-ambiguous embedded newlines cannot be disambiguated by this text protocol.
+schemas. Database identifiers outside the supported ordinary single-line ASCII
+set are detected through encoded discovery and conservatively retain the server.
 
 Do not enable automatic reaping for servers outside those assumptions. A server
 with multiple IPv4 listeners, IPv6-only binding, inaccessible `/proc`, unexpected

@@ -7,6 +7,7 @@ mcp/pkg/db/database.go (rowMapToMarkdown).
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -27,6 +28,8 @@ with (p / "calls.jsonl").open("a") as f:
     f.write(json.dumps(args) + "\\n")
 if args[-1] == "list_databases":
     output, status = cfg["list"], cfg.get("list_status", 0)
+elif args[-1] == "SELECT HEX(SCHEMA_NAME) AS database_hex FROM information_schema.SCHEMATA":
+    output, status = cfg["discovery"], cfg.get("discovery_status", 0)
 else:
     db = args[args.index("--database") + 1]
     output = cfg.get("queries", {}).get(db, "dirty\\n---\\n0")
@@ -45,6 +48,9 @@ class ReaperBehavior(unittest.TestCase):
         executable = self.base / "go/bin/dolt-mcp-server"
         executable.write_text("#!/bin/sh\nexit 99\n")
         executable.chmod(0o755)
+        self.workspace = self.base / "workspace"
+        (self.workspace / ".beads/dolt").mkdir(parents=True)
+        (self.workspace / ".beads/dolt-server.pid").write_text("424242\n")
         self.client = self.base / "client.py"
         self.client.write_text(FAKE_CLIENT)
         self.env = dict(os.environ, HOME=str(self.base), FIXTURE=str(self.base),
@@ -57,6 +63,8 @@ class ReaperBehavior(unittest.TestCase):
     def config(self, **kwargs):
         cfg = {"list": "Database\n---\ndolt\nproject"}
         cfg.update(kwargs)
+        cfg.setdefault("discovery", "database_hex\n---\n" + "\n".join(
+            name.encode().hex().upper() for name in cfg["list"].splitlines()[2:]))
         (self.base / "config.json").write_text(json.dumps(cfg))
         (self.base / "calls.jsonl").write_text("")
 
@@ -83,7 +91,7 @@ class ReaperBehavior(unittest.TestCase):
         self.config(list="Database\n---\ninformation_schema\nmysql\nperformance_schema\nsys\ndolt\nproject")
         self.assertEqual(self.check().returncode, 0)
         calls = self.calls()
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         for args in calls:
             for flag, expected in [("--host", "127.0.0.1"), ("--port", "3307"),
                                    ("--flavor", "dolt"), ("--branch", "main")]:
@@ -93,7 +101,7 @@ class ReaperBehavior(unittest.TestCase):
     def test_dirty_later_database_refused(self):
         self.config(queries={"project": "dirty\n---\n7"})
         self.assertNotEqual(self.check().returncode, 0)
-        self.assertEqual(len(self.calls()), 3)
+        self.assertEqual(len(self.calls()), 4)
 
     def test_malformed_counts_refused(self):
         for output in ["", "0", "dirty\n---\n0junk", "dirty\n---\n0\n1", "dirty\n---\n-0",
@@ -119,6 +127,51 @@ class ReaperBehavior(unittest.TestCase):
             with self.subTest(output=output):
                 self.config(list=output)
                 self.assertNotEqual(self.check().returncode, 0)
+
+    def test_encoded_discovery_passes_existing_read_only_main_gate(self):
+        spec = importlib.util.spec_from_file_location("sql_classifier", ROOT / "scripts/sql_classifier.py")
+        classifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(classifier)
+        sql = re.search(r'"(SELECT HEX[^"\n]+)"', SCRIPT.read_text()).group(1)
+        allowed, _, reason = classifier.gate_decision(
+            sql, allow_mutation=False, branch="main", maturity="ga")
+        self.assertTrue(allowed, reason)
+
+    def test_encoded_newline_database_cannot_hide_behind_clean_list_rows(self):
+        names = ["clean1", "clean2", "clean1\nclean2"]
+        self.config(list="Database\n---\nclean1\nclean2\nclean1\nclean2",
+                    discovery="database_hex\n---\n" + "\n".join(
+                        name.encode().hex().upper() for name in names))
+        self.assertNotEqual(self.check().returncode, 0)
+        # Only the connection hint and encoded discovery ran; no clean-count
+        # query can make the malformed authoritative inventory acceptable.
+        self.assertEqual(len(self.calls()), 2)
+        self.assertIn("HEX(SCHEMA_NAME)", self.calls()[-1][-1])
+
+    def test_authoritative_inventory_includes_database_missing_from_hint(self):
+        self.config(list="Database\n---\nproject",
+                    discovery="database_hex\n---\n70726F6A656374\n646F6C74",
+                    queries={"dolt": "dirty\n---\n1"})
+        self.assertNotEqual(self.check().returncode, 0)
+        self.assertEqual(self.calls()[-1][self.calls()[-1].index("--database") + 1], "dolt")
+
+    def test_failed_encoded_discovery_is_refused_before_counts(self):
+        self.config(discovery_status=4)
+        self.assertNotEqual(self.check().returncode, 0)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_empty_system_only_malformed_or_unsupported_encoded_inventory_refused(self):
+        for output in ["", "database_hex\n---", "Database\n---\n646F6C74",
+                       "database_hex\nwrong\n646F6C74", "database_hex\n---\n0",
+                       "database_hex\n---\nGG", "database_hex\n---\n646f6c74",
+                       "database_hex\n---\n646F6C7400", "database_hex\n---\nFF",
+                       "database_hex\n---\n646F6C74\n\n70726F6A656374",
+                       "database_hex\n---\n646F6C74\n646F6C74",
+                       "database_hex\n---\n" + b"information_schema".hex().upper()]:
+            with self.subTest(output=output):
+                self.config(discovery=output)
+                self.assertNotEqual(self.check().returncode, 0)
+                self.assertEqual(len(self.calls()), 2)
 
     def test_invalid_port_and_missing_client_refused(self):
         self.config()
@@ -180,6 +233,35 @@ main ''' + ("--dry-run" if dry else "")
         self.assertEqual(result.returncode, 0, result.stderr)
         signal = self.base / "signals"
         return result.stdout, signal.read_text() if signal.exists() else ""
+
+    def test_idle_non_beads_process_is_never_queried_or_signaled(self):
+        self.config()
+        (self.workspace / ".beads/dolt-server.pid").unlink()
+        out, signals = self.loop()
+        self.assertIn("1 kept", out)
+        self.assertEqual(signals, "")
+        self.assertEqual(self.calls(), [])
+
+    def test_beads_directory_with_other_pid_does_not_claim_unrelated_server(self):
+        self.config()
+        (self.workspace / ".beads/dolt-server.pid").write_text("424243\n")
+        out, signals = self.loop()
+        self.assertIn("1 kept", out)
+        self.assertEqual(signals, "")
+        self.assertEqual(self.calls(), [])
+
+    def test_existing_beads_data_cwd_is_owned_but_arbitrary_cwd_is_not(self):
+        for relative in (".beads", ".beads/dolt"):
+            with self.subTest(relative=relative):
+                self.env["CANDIDATE_CWD"] = str(self.workspace / relative)
+                result = self.run_bash('bd_workspace 424242 "$CANDIDATE_CWD"')
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout.strip(), str(self.workspace))
+        for cwd in (self.base / "missing/.beads/dolt", self.workspace / "freshie/dolt"):
+            with self.subTest(cwd=cwd):
+                self.env["CANDIDATE_CWD"] = str(cwd)
+                result = self.run_bash('bd_workspace 424242 "$CANDIDATE_CWD"')
+                self.assertNotEqual(result.returncode, 0)
 
     def test_active_process_is_kept_without_query(self):
         self.config()

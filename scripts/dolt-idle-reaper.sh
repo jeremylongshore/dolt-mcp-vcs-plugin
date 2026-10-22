@@ -34,14 +34,26 @@
 #   3,33 * * * * /path/to/dolt-idle-reaper.sh >> ~/.local/state/dolt-reaper/reap.log 2>&1
 set -uo pipefail
 
-# Resolve a server process's workspace root from its cwd (cwd is either the
-# workspace root or its .beads/dolt data-dir).
-ws_root() {
-  local cwd="$1"
+# Resolve only positively identified bd-managed servers. A Dolt process in a
+# repository with .beads is not enough: workspace-root launches require the
+# exact bd dolt-server.pid marker. Unrelated/Freshie servers must stay alive.
+bd_workspace() {
+  local pid="$1" cwd="$2" marker
   case "$cwd" in
-    */.beads/dolt) echo "${cwd%/.beads/dolt}" ;;
-    */.beads)      echo "${cwd%/.beads}" ;;
-    *)             echo "$cwd" ;;
+    */.beads/dolt)
+      [ -d "$cwd" ] || return 1
+      echo "${cwd%/.beads/dolt}"
+      ;;
+    */.beads)
+      [ -d "$cwd" ] || return 1
+      echo "${cwd%/.beads}"
+      ;;
+    *)
+      marker="$cwd/.beads/dolt-server.pid"
+      [ -f "$marker" ] || return 1
+      [ "$(cat "$marker" 2>/dev/null)" = "$pid" ] || return 1
+      echo "$cwd"
+      ;;
   esac
 }
 
@@ -75,7 +87,7 @@ server_identity() {
 # Return 1 (skip) on ANY uncommitted change, query error, unreachable server,
 # or missing toolchain. Conservative by design.
 working_set_clean() {
-  local port="$1" dbs db n any_user=0
+  local port="$1" dbs db n bootstrap='' any_user=0
   local -a rows
   [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$port" -le 65535 ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
@@ -84,14 +96,48 @@ working_set_clean() {
 
   dbs=$(python3 "$MCP_CLIENT" --host 127.0.0.1 --flavor dolt \
     --port "$port" --database information_schema --branch main list_databases 2>/dev/null) || return 1
-  # dolthub/dolt-mcp v0.3.6's one-column Markdown contract. Never strip
-  # arbitrary headers or accept a numeric prefix from a failed query.
+  # The text list is only a connection hint: its unescaped rows cannot prove
+  # inventory completeness. The pinned query tool needs a user DB for its
+  # DOLT_CHECKOUT, so use one ordinary candidate to query encoded schema names.
   mapfile -t rows <<< "$dbs"
   [ "${rows[0]:-}" = Database ] && [ "${rows[1]:-}" = '---' ] || return 1
   for db in "${rows[@]:2}"; do
-    # Unescaped Markdown cannot represent every database identifier safely.
-    # Refuse unsupported names rather than silently skipping ambiguous rows.
     [[ "$db" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ ]] || return 1
+    case "$db" in
+      information_schema|mysql|performance_schema|sys) continue ;;
+    esac
+    [ -n "$bootstrap" ] || bootstrap="$db"
+  done
+  [ -n "$bootstrap" ] || return 1
+  dbs=$(python3 "$MCP_CLIENT" --host 127.0.0.1 --flavor dolt --port "$port" \
+    --database "$bootstrap" --branch main query \
+    "SELECT HEX(SCHEMA_NAME) AS database_hex FROM information_schema.SCHEMATA" \
+    2>/dev/null) || return 1
+  # Validate the whole encoded inventory before emitting any names. Embedded
+  # newlines, NULs, Markdown delimiters, non-ASCII, and malformed hex all refuse.
+  dbs=$(python3 -c '
+import re
+import sys
+try:
+    rows = sys.stdin.read().rstrip("\n").split("\n")
+    if rows[:2] != ["database_hex", "---"] or len(rows) < 3:
+        raise ValueError("invalid inventory header or empty inventory")
+    names = []
+    for row in rows[2:]:
+        if not re.fullmatch(r"(?:[0-9A-F]{2})+", row):
+            raise ValueError("invalid encoded name")
+        name = bytes.fromhex(row).decode("ascii")
+        if not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]*", name):
+            raise ValueError("unsupported database identifier")
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate inventory rows")
+    print("\n".join(names))
+except (ValueError, UnicodeError):
+    sys.exit(1)
+' <<< "$dbs") || return 1
+  mapfile -t rows <<< "$dbs"
+  for db in "${rows[@]}"; do
     case "$db" in
       information_schema|mysql|performance_schema|sys) continue ;;
     esac
@@ -140,7 +186,7 @@ main() {
   for pid in $(pgrep -f 'dolt sql-server' 2>/dev/null); do
     total=$((total+1))
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || { continue; }
-    ws=$(ws_root "$cwd")
+    ws=$(bd_workspace "$pid" "$cwd") || { kept=$((kept+1)); continue; }
     short=$(echo "$ws" | sed "s#$HOME/##")
     act=$(latest_activity "$ws")
     observed_act=$act
@@ -179,7 +225,7 @@ main() {
       skipped=$((skipped+1))
     fi
   done
-  echo "[$(date '+%F %T')] reaper done — $total servers, $reaped $([ $DRY -eq 1 ] && echo would-reap || echo reaped), $skipped skipped-dirty, $kept kept (active within ${IDLE_MIN}m). bd respawns clean reaps on next use."
+  echo "[$(date '+%F %T')] reaper done — $total servers, $reaped $([ $DRY -eq 1 ] && echo would-reap || echo reaped), $skipped skipped-dirty, $kept kept (active, changed, or unowned). bd respawns clean reaps on next use."
 
 }
 

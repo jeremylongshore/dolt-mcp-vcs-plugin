@@ -9,6 +9,9 @@ All notable changes to the `dolt-mcp-vcs` plugin. Format loosely follows
 - Idle reaping checks user databases named `dolt`, requires successful MCP calls
   and the exact pinned formatter's zero-count response, and refuses malformed
   or unknown results. Endpoint flags cannot inherit a remote `DOLT_HOST`.
+- Require positive bd ownership before queries so unrelated/Freshie processes
+  are retained. Use encoded schema discovery to reject embedded-newline names
+  that the upstream text listing could split into apparently clean databases.
 - Verify the candidate process owns its loopback listener instead of trusting
   a declared port; recheck process identity and activity before signaling.
 - Add hermetic process/MCP fixtures to the existing safety gate. No test connects
