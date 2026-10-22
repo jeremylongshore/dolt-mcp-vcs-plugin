@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Python suites (classifier · creds-ref · profile seam · flavor detection)
-        run: python3 -m unittest tests.test_sql_classifier tests.test_resolve_creds_ref tests.test_profile_sql tests.test_dolt_detect -v
+      - name: Python suites (classifier · creds-ref · profile seam · flavor detection · idle reaper)
+        run: python3 -m unittest tests.test_sql_classifier tests.test_resolve_creds_ref tests.test_profile_sql tests.test_dolt_detect tests.test_idle_reaper -v
 
       - name: "§10 union safety gate (MCP + Bash)"
         run: bash scripts/check-agent-safety.sh

@@ -3,6 +3,20 @@
 All notable changes to the `dolt-mcp-vcs` plugin. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are the plugin manifest versions.
 
+## 0.2.1 — 2026-10-22
+
+### Fixed
+- Idle reaping checks user databases named `dolt`, requires successful MCP calls
+  and the exact pinned formatter's zero-count response, and refuses malformed
+  or unknown results. Endpoint flags cannot inherit a remote `DOLT_HOST`.
+- Verify the candidate process owns its loopback listener instead of trusting
+  a declared port; recheck process identity and activity before signaling.
+- Add hermetic process/MCP fixtures to the existing safety gate. No test connects
+  to a live database or sends a real signal.
+- Replace unconditional safety claims with the main-branch/account-visibility
+  scope and remaining concurrent-write race. Install the adjacent
+  `scripts/reaper_endpoint.py` alongside the reaper; missing helpers fail closed.
+
 ## 0.2.0 — 2026-07-17
 
 **Flavor auto-detection: the plugin now answers "what kind of Dolt database am I working
