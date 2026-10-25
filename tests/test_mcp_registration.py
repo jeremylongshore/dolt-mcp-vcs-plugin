@@ -91,6 +91,13 @@ class InstalledRegistration(unittest.TestCase):
                 for name, args in (("exec", {"query": "DROP DATABASE fixture"}),
                                    ("query", {"query": "DELETE FROM t"}), ("exec", {})):
                     self.assertTrue(request("tools/call", {"name": name, "arguments": args}).get("isError"))
+                for name in ("query", "exec"):
+                    for sql in ("PREPARE p FROM 'DELETE FROM t'", "EXECUTE p",
+                                "EXPLAIN (ANALYZE, BUFFERS) DELETE FROM t"):
+                        with self.subTest(tool=name, sql=sql, opt_in=opt_in):
+                            result = request("tools/call", {"name": name,
+                                             "arguments": {"query": sql}})
+                            self.assertTrue(result.get("isError"), result)
                 write = request("tools/call", {"name": "exec", "arguments": {"query": "INSERT INTO t VALUES (1)"}})
                 self.assertEqual(bool(write.get("isError")), not opt_in)
                 read = request("tools/call", {"name": "query", "arguments": {"query": "SELECT 1"}})

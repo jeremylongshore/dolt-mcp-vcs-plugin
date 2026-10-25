@@ -40,7 +40,7 @@ _SEVERITY = {READ: 0, SAFE_WRITE: 1, HISTORY_AFFECTING: 2}
 # Leading keywords that are unambiguously read-only.
 _READ_LEADERS = {
     "SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "USE", "VALUES", "TABLE",
-    "HELP", "PREPARE", "EXECUTE", "DEALLOCATE",
+    "HELP", "DEALLOCATE",
 }
 # `SET` is session config (read-class for our purposes); `SET PASSWORD`/`SET GLOBAL`
 # are handled as exceptions below.
@@ -57,7 +57,14 @@ _SAFE_WRITE_LEADERS = {
 _HISTORY_LEADERS = {
     "GRANT", "REVOKE", "FLUSH", "SHUTDOWN", "KILL", "RESET", "PURGE",
     "LOCK", "UNLOCK", "INSTALL", "UNINSTALL", "BACKUP", "RESTORE",
+    # Prepared statements depend on session state outside this stateless gate.
+    # Even mutation opt-in must not let an EXECUTE hide DROP / DOLT_PUSH / etc.
+    "PREPARE", "EXECUTE",
 }
+
+_EXPLAIN_SUBJECT = re.compile(
+    r"\b(?:SELECT|WITH|TABLE|VALUES|INSERT|UPDATE|DELETE|REPLACE|MERGE|CREATE|EXECUTE|CALL)\b"
+)
 
 # CALL DOLT_* procedure verb-classes. Anything not listed -> history-affecting.
 _DOLT_PROC_CLASS = {
@@ -175,6 +182,16 @@ def classify_statement(sql):
 
     if lead == "CALL":
         return _classify_call(stmt_upper)
+
+    if lead == "EXPLAIN":
+        # ANALYZE executes its subject. Do not infer execution safety from the
+        # read-looking EXPLAIN prefix, or interpret dialect-specific option
+        # booleans. Plain plans remain read-only, including keyword data in the
+        # subject (EXPLAIN SELECT 'ANALYZE').
+        options = _EXPLAIN_SUBJECT.split(stmt_upper, maxsplit=1)[0]
+        if re.search(r"\bANALY[ZS]E\b", options):
+            return HISTORY_AFFECTING
+        return READ
 
     if lead == "WITH":
         # A CTE wraps either a read (SELECT) or a write (INSERT/UPDATE/DELETE/...).
