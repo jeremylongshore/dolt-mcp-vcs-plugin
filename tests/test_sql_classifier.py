@@ -175,6 +175,10 @@ class TestIndirectExecution(unittest.TestCase):
         "EXPLAIN (ANALYZE, BUFFERS) DELETE FROM issues",
         "EXPLAIN (FORMAT JSON, ANALYZE TRUE) UPDATE issues SET status='closed'",
         "EXPLAIN (ANALYZE FALSE) SELECT 1",
+        "/*!80000 EXECUTE p */",
+        "/*! PREPARE p FROM 'DELETE FROM issues' */",
+        "SELECT 1; /*M! EXECUTE p */",
+        "/*m! EXPLAIN ANALYZE DELETE FROM issues */",
     )
 
     def test_indirect_forms_are_recommend_only(self):
@@ -195,15 +199,20 @@ class TestIndirectExecution(unittest.TestCase):
 
     def test_read_prefix_cannot_hide_indirect_execution(self):
         for sql in self.CASES:
-            with self.subTest(sql=sql):
-                self.assertEqual(classify_sql("SELECT 1; " + sql + "; SELECT 2"),
-                                 HISTORY_AFFECTING)
+            for prefix in ("SELECT 1; ", r"SELECT 'it\'s'; ",
+                           r'SELECT "a\"b"; ', "SELECT 'it''s'; ", "SELECT 1--2; "):
+                with self.subTest(sql=sql, prefix=prefix):
+                    self.assertEqual(classify_sql(prefix + sql + "; SELECT 2"),
+                                     HISTORY_AFFECTING)
 
     def test_plain_plans_and_keyword_data_remain_read_only(self):
         for sql in ("EXPLAIN SELECT * FROM issues", "EXPLAIN DELETE FROM issues",
                     "EXPLAIN FORMAT=JSON SELECT * FROM issues",
                     "EXPLAIN SELECT 'ANALYZE'", "EXPLAIN SELECT analyze FROM t",
                     "SELECT 'PREPARE p; EXECUTE p; EXPLAIN ANALYZE'",
+                    "SELECT '/*! EXECUTE p */'",
+                    "SELECT \"/*M! EXECUTE p */\"",
+                    "/* documentation: /*! EXECUTE p */ SELECT 1",
                     "DEALLOCATE PREPARE p"):
             with self.subTest(sql=sql):
                 self.assertEqual(classify_sql(sql), READ)

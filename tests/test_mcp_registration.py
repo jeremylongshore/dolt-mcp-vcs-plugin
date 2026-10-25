@@ -93,7 +93,9 @@ class InstalledRegistration(unittest.TestCase):
                     self.assertTrue(request("tools/call", {"name": name, "arguments": args}).get("isError"))
                 for name in ("query", "exec"):
                     for sql in ("PREPARE p FROM 'DELETE FROM t'", "EXECUTE p",
-                                "EXPLAIN (ANALYZE, BUFFERS) DELETE FROM t"):
+                                "EXPLAIN (ANALYZE, BUFFERS) DELETE FROM t",
+                                "/*!80000 EXECUTE p */", "/*M! EXECUTE p */",
+                                r"SELECT 'it\'s'; EXECUTE p", "SELECT 1--2; EXECUTE p"):
                         with self.subTest(tool=name, sql=sql, opt_in=opt_in):
                             result = request("tools/call", {"name": name,
                                              "arguments": {"query": sql}})

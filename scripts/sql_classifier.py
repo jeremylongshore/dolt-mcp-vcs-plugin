@@ -98,12 +98,15 @@ _DELETE_FLAG = re.compile(r"""['"]\s*--?(?:delete|d)\s*['"]""", re.IGNORECASE)
 _WRITE_VERB_ANYWHERE = re.compile(r"\b(INSERT|UPDATE|DELETE|REPLACE|MERGE)\b", re.IGNORECASE)
 
 
-def strip_sql_comments(sql):
+def strip_sql_comments(sql, *, report_executable=False):
     """Remove `/* */`, `--`, and `#` comments so a verb hidden behind a comment
     cannot mask the real leading verb — while preserving string literals, so a
     `--`/`#` *inside* a quoted value (e.g. `DOLT_RESET('--hard')`) is NOT mistaken
-    for a comment. Quote-aware with backslash- and doubled-quote escapes."""
+    for a comment. Quote-aware with backslash- and doubled-quote escapes.
+    Classification callers request a flag for executable MySQL/MariaDB comments;
+    those cannot safely disappear before the statement is inspected."""
     out = []
+    executable = False
     i, n, quote = 0, len(sql), None
     while i < n:
         ch = sql[i]
@@ -120,26 +123,43 @@ def strip_sql_comments(sql):
         if ch in ("'", '"', "`"):
             quote = ch; out.append(ch); i += 1; continue
         if ch == "/" and i + 1 < n and sql[i + 1] == "*":   # block comment
+            if sql.startswith(("/*!", "/*M!", "/*m!"), i):
+                executable = True
             j = sql.find("*/", i + 2)
             i = n if j == -1 else j + 2
             out.append(" "); continue
-        if (ch == "-" and i + 1 < n and sql[i + 1] == "-") or ch == "#":   # line comment
+        # MySQL -- comments require following whitespace/control (or EOF).
+        # Otherwise SELECT 1--2; EXECUTE p is arithmetic followed by a real
+        # second statement, not a read whose tail may be discarded.
+        dash_comment = (ch == "-" and i + 1 < n and sql[i + 1] == "-"
+                        and (i + 2 == n or ord(sql[i + 2]) <= 32))
+        if dash_comment or ch == "#":   # line comment
             j = sql.find("\n", i)
             i = n if j == -1 else j
             out.append(" "); continue
         out.append(ch); i += 1
-    return "".join(out)
+    cleaned = "".join(out)
+    return (cleaned, executable) if report_executable else cleaned
 
 
 def split_statements(sql):
-    """Naive `;` split (ignoring `;` inside quotes). Conservative: when in doubt a
-    fragment is classified, and the batch takes the max severity, so an over-split
-    never *lowers* the verdict."""
+    """Split outside quotes, honoring the comment scanner's backslash and
+    doubled-quote escapes so an escaped quote cannot hide a later statement."""
     out, buf, quote = [], [], None
-    for ch in sql:
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
         if quote:
             buf.append(ch)
+            if ch == "\\" and i + 1 < n:
+                buf.append(sql[i + 1])
+                i += 2
+                continue
             if ch == quote:
+                if i + 1 < n and sql[i + 1] == quote:
+                    buf.append(sql[i + 1])
+                    i += 2
+                    continue
                 quote = None
         elif ch in ("'", '"', "`"):
             quote = ch
@@ -149,6 +169,7 @@ def split_statements(sql):
             buf = []
         else:
             buf.append(ch)
+        i += 1
     if buf:
         out.append("".join(buf))
     return [s for s in (frag.strip() for frag in out) if s]
@@ -171,7 +192,10 @@ def _classify_call(stmt_upper):
 
 def classify_statement(sql):
     """Classify a single SQL statement into read / safe-write / history-affecting."""
-    stmt = strip_sql_comments(sql).strip().lstrip("(").strip()
+    cleaned, executable = strip_sql_comments(sql, report_executable=True)
+    if executable:
+        return HISTORY_AFFECTING
+    stmt = cleaned.strip().lstrip("(").strip()
     if not stmt:
         return READ
     m = _LEADING_TOKEN.match(stmt)
@@ -225,7 +249,10 @@ def classify_statement(sql):
 
 def classify_sql(sql):
     """Classify a (possibly multi-statement) SQL string at its max severity."""
-    statements = split_statements(strip_sql_comments(sql))
+    cleaned, executable = strip_sql_comments(sql, report_executable=True)
+    if executable:
+        return HISTORY_AFFECTING
+    statements = split_statements(cleaned)
     if not statements:
         return READ
     worst = READ
