@@ -110,6 +110,31 @@ python3 scripts/dolt-mcp-client.py \
   tool.
 - The detector itself is **read-only**: it never starts, stops, or writes to any database.
 
+### Indirect SQL execution
+
+The stateless SQL gate refuses `PREPARE`, `EXECUTE`, and `EXPLAIN` with an
+`ANALYZE`/`ANALYSE` option, through both the client and native MCP registration.
+Mutation opt-in does not enable these forms: a prepared name can hide a write
+or history operation, and an executing plan runs its subject. Use direct SQL
+subject to the existing mutation gate, or plain `EXPLAIN` for a non-executing
+plan. Executing-plan option lists are conservatively refused even when they
+say `ANALYZE FALSE`; the gate does not interpret dialect-specific option values.
+Executable SQL comments (`/*! ... */` and `/*M! ... */`) outside quoted data
+are also refused, rather than being stripped into an apparently empty read.
+Ordinary comments and comment-like text inside quoted values remain supported.
+Statement splitting honors backslash and doubled-quote escapes. Double-dash
+comments follow MySQL's whitespace/control requirement so arithmetic such as
+`1--2` cannot hide the next statement.
+
+This is a bounded statement-classification rule, not a general SQL parser or a
+replacement for database permissions. It does not certify all SQL effects.
+The semantics are documented by [Dolt's supported statements](https://www.dolthub.com/docs/sql-reference/sql-support/supported-statements/),
+[MySQL prepared statements](https://dev.mysql.com/doc/refman/8.0/en/sql-prepared-statements.html),
+and [PostgreSQL EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html).
+See also [MySQL executable-comment semantics](https://dev.mysql.com/doc/refman/8.0/en/comments.html).
+`tests/test_sql_classifier.py` checks the refusal matrix;
+`tests/test_mcp_registration.py` proves refused calls never reach its inert peer.
+
 ## Install
 
 Any consumer, no estate-specific assumptions:
